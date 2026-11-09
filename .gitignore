@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Downloader output
+downloads/
+_verify/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
