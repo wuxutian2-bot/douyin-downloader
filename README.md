@@ -197,4 +197,4 @@ douyin-downloader/
 
 ## License
 
-[MIT](LICENSE) © tibo
+[MIT](LICENSE) © muxia
