@@ -1,5 +1,7 @@
 * text=auto eol=lf
 
-# Windows batch files must keep CRLF line endings
-*.bat text eol=crlf
-*.cmd text eol=crlf
+# Windows batch files must keep their exact bytes (CRLF) in the repo,
+# otherwise cmd.exe can mis-parse labels. Mark them binary so git never
+# normalizes line endings in the stored blob.
+*.bat binary
+*.cmd binary
