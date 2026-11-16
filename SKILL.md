@@ -1,32 +1,35 @@
 ---
 name: douyin-downloader
-description: "Douyin link to video/album/GIF/audio/music: local tool."
-version: 1.1.0
+description: "Douyin link to video/album/live-photo/GIF/audio/music: local tool."
+version: 1.2.0
 author: tibo
 license: MIT
 platforms: [windows, linux, macos]
 metadata:
   hermes:
-    tags: [Douyin, 抖音, Video, Image, Album, GIF, Audio, Music, 配乐, 原声, Download, Chrome, CDP]
+    tags: [Douyin, 抖音, Video, Image, Album, LivePhoto, 动图, 实况, GIF, Audio, Music, 配乐, 原声, Download, Chrome, CDP]
     related_skills: [video-download]
 ---
 
-# 抖音作品下载器（视频 / 图集 / GIF / 音频）
+# 抖音作品下载器（视频 / 图集 / 动图 / GIF / 音频）
 
 给一个抖音链接，把作品的原片存到本地：视频取最高清晰度无水印源，图集取原图（自动转 JPG），
-需要时把视频转成 GIF。用户明确要音频时，还能导出视频原声或作品配乐。
+动图/实况连动画一起存（`_01.mp4`）。用户明确要音频时，还能导出视频原声或作品配乐。
 完全本地运行，不依赖任何第三方 Python 包。
 
 ## When to Use
 
 用户粘贴抖音链接（短链 `v.douyin.com/xxx`、`/video/<id>`、`/note/<id>`、裸 19 位 ID，
-或整段分享文案）并想要其中的视频、图片、图集或 GIF。也用于用户问"这个抖音链接能下吗"、
-"帮我存下来"、"要原图"、"转个 GIF"。非抖音平台（YouTube/TikTok/B站）用 `video-download`。
+或整段分享文案）并想要其中的视频、图片、图集、动图/实况或 GIF。也用于用户问"这个抖音链接能下吗"、
+"帮我存下来"、"要原图"、"转个 GIF"、"动图怎么不动"。非抖音平台（YouTube/TikTok/B站）用 `video-download`。
 
 用户额外提到**声音/音频**时也归这里：`原声`、`视频里的声音`、`音频`、`配音`、`人声` →
 加 `--audio`；`配乐`、`BGM`、`背景音乐`、`这首歌`、`音乐` → 加 `--music`。
 **用户没提音频就不要加这两个参数**——默认只下原片/原图，一个音频文件都不产出。
 要音频时把参数加在**同一条命令**上，一次跑完，不要先下视频再单独跑一遍。
+
+动图/实况默认会连 `_01.mp4` 一起存；用户明确说"只要图/不要动图"时才加 `--still-only`。
+用户要 GIF 时加 `--to-gif`——别自己把动图 mp4 重命名成 `.gif`，那不是 GIF。
 
 **路径**：`scripts/douyin_dl.py`、`scripts/douyin_cdp.py`、`scripts/下载抖音视频.bat`、`scripts/README.md`。
 把前两个 `.py` 拷到同一目录即可运行；`README.md` 可以直接给用户看。
@@ -62,10 +65,13 @@ python douyin_dl.py "7.17 复制此链接打开抖音 https://v.douyin.com/XXXX/
 # 落地到指定目录
 python douyin_dl.py "<链接>" -o D:\my\videos
 
-# 图集（自动逐张下载，webp 转 JPG）
+# 图集 / 动图（自动逐张下载；有动图的会连 _01.mp4 一起存）
 python douyin_dl.py "https://www.douyin.com/note/7697265979428200050"
 
-# 视频额外转一份 GIF（12fps / 480px 宽）
+# 只要静态图，不要动图/实况片段
+python douyin_dl.py "<链接>" --still-only
+
+# 视频或动图额外转 GIF（12fps / 480px 宽）
 python douyin_dl.py "<链接>" --to-gif
 
 # 额外导出视频原声（m4a，需 ffmpeg）
@@ -93,9 +99,26 @@ python douyin_dl.py "<链接>" --json
 |---|---|
 | 视频 | `douyin_<id>.mp4`（最高清晰度，无水印） |
 | 图集 | `douyin_<id>_01.jpg`、`_02.jpg` …（原图，按张编号） |
+| 动图/实况 | 额外 `douyin_<id>_01.mp4` …（每张图的动画，默认保存） |
+| `--still-only` | 不产出上面的动图 mp4，只留静态图 |
 | `--audio` | 额外 `douyin_<id>_audio.m4a`（`--audio-format mp3` 时是 `.mp3`） |
 | `--music` | 额外 `douyin_<id>_music.mp3` |
-| `--to-gif` | 额外 `douyin_<id>.gif` |
+| `--to-gif` | 额外 `douyin_<id>.gif`；动图作品额外 `_01.gif` … |
+
+### 动图 / 实况（默认连动画一起存）
+
+抖音的动图/实况作品，每张图其实是「静态首帧 + 一段短 mp4」：
+`url_list` 里是首帧 jpg/webp，真正的动画在 `images[i].video.play_addr`。
+默认两个都存，编号一致：
+
+| 产出 | 说明 |
+|---|---|
+| `douyin_<id>_01.jpg` | 首帧原图 |
+| `douyin_<id>_01.mp4` | 动图/实况片段（h264，通常带 aac 音轨） |
+
+- 只要静态图：加 `--still-only`。
+- 要 GIF：再加 `--to-gif`，每段额外产出 `_01.gif`（无音轨，480px/12fps，体积可能 3–5 MB）。
+- 普通图集没有 `video` 字段，不会凭空多出 mp4；判断依据是 `images[i].video.play_addr` 是否存在。
 
 ### 音频与配乐（默认不下载）
 
@@ -152,6 +175,11 @@ python douyin_dl.py "<链接>" --json
    抽失败才退回 `music.play_url`。Flight 数据的音乐字段是 camelCase（`playUrl` / `urlList`），
    `douyin_cdp._normalize_camel` 会统一成 snake_case。
 
+5. **动图/实况的动画在 `images[i].video` 里，不在图片 URL 里。** `url_list` 只是首帧；
+   `video.play_addr` 是 1–5 秒的 mp4（常带 aac）。普通图集没有 `video` 字段。
+   detail 路径是 `video.play_addr.url_list`，Flight 路径是 `video.playAddr: [{src}]`，
+   `_normalize_camel` 必须原样保留这个 `video`——1.2.0 之前它被整个丢掉，所以只下到首帧静图。
+
 ## 关键陷阱
 
 - **别覆盖 User-Agent。** 用浏览器默认 UA 最稳。抖音对移动端 UA 或陌生指纹更容易回验证码中间页。
@@ -171,6 +199,14 @@ python douyin_dl.py "<链接>" --json
 - **图集有两套 URL，别拿错。** `url_list` 是干净原图（`tplv-dy-aweme-images-v2`），
   `download_url_list` 是带水印版（`tplv-dy-water-v10`）。用户说"有水印"时，
   先检查取的是不是 `download_url_list`，不要一上来就去搞图像修补/裁剪——源里本来就有干净的。
+- **`url_list` 里的 webp/jpeg 不是动画。** 动图/实况只下 `url_list` 就是一张首帧静图，
+  动画在 `images[i].video.play_addr`。用户说"动图不动"时先查这里。
+- **`_normalize_camel` 不能丢 `image.video`。** 1.2.0 的修复点：Flight 归一化以前只保留
+  `url_list`，把 `video` 整个丢了，于是动图作品稳定退化成静图。
+- **别给普通图集造 mp4。** 只有 `images[i].video.play_addr` 存在时才是动图/实况；
+  普通图集没有 `video` 字段，别按"每张图都有动画"处理。
+- **动图片段通常带音轨。** 保留在 mp4 里；`--to-gif` 会丢音轨，而且 4–5 秒 480px 的 GIF
+  单张就有 3–5 MB，只在用户明确要 GIF 时才加。
 - **`video.audio` 是空壳，不是音轨地址。** 实测 detail JSON 里它是 `{}`，`bit_rate_audio` 是
   `null`。找不到"纯音频直链"是正常的，改用 `music.play_url` 或从 mp4 抽。
 - **用曲作品的 `music.play_url` 可能只有试听片段。** `music.prevent_download` 为真，或下载时长
@@ -209,13 +245,20 @@ python douyin_dl.py "https://v.douyin.com/<short>/" --to-gif               # GIF
 python douyin_dl.py "https://v.douyin.com/<short>/" --audio                # 抽音轨
 python douyin_dl.py "https://v.douyin.com/<short>/" --music                # 配乐
 python douyin_dl.py "https://www.douyin.com/note/<id>" --music             # 图集配乐
+python douyin_dl.py "https://v.douyin.com/31jrmGbZcLg/"                    # 动图/实况：6 jpg + 6 mp4
+python douyin_dl.py "https://v.douyin.com/31jrmGbZcLg/" --still-only       # 只留静态图
+python douyin_dl.py "https://v.douyin.com/31jrmGbZcLg/" --to-gif           # 动图转 GIF
 ffprobe -v error -show_entries stream=width,height -of csv=p=0 <图片>       # 确认是原图尺寸
 ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 <音频>
+ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 <GIF>
 ```
 
 视频要看到 `[视频]` + 分辨率 ≥ 1080 宽；图集要看到 `[图集]` + 逐张 `jpeg`；
 `--audio` 要看到 `_audio.m4a` 且 ffprobe 能读到 `aac` 音轨；`--music` 要看到 `_music.mp3`；
 **不带 `--audio` / `--music` 时目录里不能出现 `.mp3` / `.m4a`**。
+动图作品要看到 `_01.jpg` 和 `_01.mp4` **成对出现**，mp4 有 h264 视频流（通常还有 aac 音轨）；
+普通图集（如 `7707963177069283283`）只有 jpg，**不能多出 `_01.mp4`**；
+GIF 的 `nb_read_frames` 必须 > 1。
 以上都要 `成功 N/N，失败 0`。跑完删掉 `_verify/`。
 
 `--audio` 还要在"没装 ffmpeg"的条件下跑一次：临时把 PATH 收窄到只剩 Python
@@ -234,7 +277,7 @@ ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 <
 
 | 文件 | 作用 |
 |---|---|
-| `scripts/douyin_dl.py` | 主程序：解析链接、挑档、下载、校验、转格式、抽音轨/配乐 |
+| `scripts/douyin_dl.py` | 主程序：解析链接、挑档、下载、校验、转格式、抽音轨/配乐、取动图片段 |
 | `scripts/douyin_cdp.py` | CDP 抓取器：自带 WebSocket 客户端，负责拿到作品 JSON |
 | `scripts/下载抖音视频.bat` | Windows 双击入口（ASCII 主体 + GBK + CRLF） |
 | `scripts/README.md` | 面向使用者的说明 |

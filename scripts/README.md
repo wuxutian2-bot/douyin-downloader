@@ -1,6 +1,6 @@
 # 抖音作品下载器
 
-给一个抖音链接，把作品原片存到本地。支持**视频**、**图集**、**动图 GIF**，
+给一个抖音链接，把作品原片存到本地。支持**视频**、**图集**、**动图/实况**、**GIF**，
 需要时还能导出**视频原声**或**作品配乐**。
 纯 Python 标准库 + 本机浏览器，不需要 `pip install` 任何东西。
 
@@ -44,8 +44,11 @@ python douyin_dl.py "https://v.douyin.com/XXXX/"
 # 指定输出目录
 python douyin_dl.py "<链接>" -o D:\我的视频
 
-# 视频额外转一份 GIF
+# 视频或动图额外转一份 GIF
 python douyin_dl.py "<链接>" --to-gif
+
+# 图集只留静态图，不要动图/实况片段
+python douyin_dl.py "<链接>" --still-only
 
 # 指定清晰度（默认最高）
 python douyin_dl.py "<链接>" -q 720
@@ -74,9 +77,11 @@ python douyin_dl.py "<链接>" --json
 |---|---|
 | 视频 | `douyin_<id>.mp4` — 最高清晰度，无水印 |
 | 图集 | `douyin_<id>_01.jpg`、`_02.jpg` … — 原图，自动从 webp 转 JPG |
+| 动图/实况 | 额外 `douyin_<id>_01.mp4` … — 每张图的动画，默认保存 |
+| `--still-only` | 不产出动图 mp4，只留静态图 |
 | `--audio` | 额外 `douyin_<id>_audio.m4a`（或 `--audio-format mp3` 时的 `.mp3`） |
 | `--music` | 额外 `douyin_<id>_music.mp3` |
-| `--to-gif` | 额外 `douyin_<id>.gif` |
+| `--to-gif` | 额外 `douyin_<id>.gif`；动图作品额外 `_01.gif` … |
 
 默认不下载音频。`--audio` 抽的是视频里实际听到的声音（需要 ffmpeg）；
 `--music` 下的是抖音单独存的那条音乐轨（mp3，不需要 ffmpeg）。
@@ -136,6 +141,10 @@ sudo apt install ffmpeg  # Debian/Ubuntu
 
 **下载的图片打不开**
 装 ffmpeg，工具会自动把 webp 转成 JPG。
+
+**动图只下到一张静态图**
+动图/实况默认会额外存 `_01.mp4`（动画在里面）。只有 jpg 时检查是不是加了 `--still-only`。
+要 GIF 再加 `--to-gif`。
 
 **没有 mp3 / 音频文件**
 音频是按需下载的，默认不产出。要原声加 `--audio`，要配乐加 `--music`。

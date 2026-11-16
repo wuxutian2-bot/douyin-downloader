@@ -12,6 +12,7 @@
     python douyin_dl.py <链接> --audio         # 额外导出视频原声（需 ffmpeg）
     python douyin_dl.py <链接> --music         # 额外下载配乐/音乐（mp3）
     python douyin_dl.py <链接> --audio --music # 两个都要
+    python douyin_dl.py <链接> --still-only    # 图集只存静态图，不要动图/实况片段
 
 支持的输入：
     https://v.douyin.com/XXXX/                   分享短链
@@ -23,11 +24,13 @@
 产出：
     视频  → douyin_<id>.mp4          （最高清晰度，无水印）
     图集  → douyin_<id>_01.jpg …     （原图，按张顺序编号）
+    动图  → douyin_<id>_01.mp4 …     （图集里的动图/实况片段，默认自动保存）
     音频  → douyin_<id>_audio.m4a    （--audio，从视频抽出的原声，默认无损复制）
     配乐  → douyin_<id>_music.mp3    （--music，作品自带音乐轨）
     GIF   → douyin_<id>.gif          （--to-gif）
 
 音频/配乐默认**不下载**，只有显式加 --audio / --music 才产出。
+动图/实况片段默认保存；只要静态图时加 --still-only。
 """
 from __future__ import annotations
 
@@ -205,48 +208,74 @@ def _pick_video_url(ad: dict, quality: str = "best") -> tuple[str, dict]:
     return urls[0].replace("http://", "https://"), chosen
 
 
-def _pick_image_urls(ad: dict) -> list[str]:
-    """从图集作品里取每张图的无水印原图地址。
+def _pick_image_items(ad: dict) -> list[dict]:
+    """每张图的静态原图 + 可选动图/实况片段。
 
-    抖音给两套 URL：
+    抖音给两套静态 URL：
       - url_list          → `tplv-dy-aweme-images-v2`  **无水印**
       - download_url_list → `tplv-dy-water-v10`        **带「抖音号：xxx」水印**
-    所以绝不能用 download_url_list 兜底，否则默认下到的是水印版。
+    绝不能用 download_url_list 兜底，否则默认下到的是水印版。
+
+    重点是 `video`：动图/实况作品的动画不在图片 URL 里，而在
+    `images[i].video.play_addr`（一个短 mp4，通常还带音轨）。
+    只取 url_list 就只剩首帧静态图——这正是之前"动图只下一张图"的原因。
     """
     imgs = ad.get("images") or ad.get("image_list") or []
-    urls: list[str] = []
+    items: list[dict] = []
     for entry in imgs:
         if not isinstance(entry, dict):
             continue
-        clean = [u for u in (entry.get("url_list") or []) if "water" not in u.lower()]
-        pool = clean or [u for u in (entry.get("url_list") or []) if u]
+        raw_urls = _as_url_list(entry.get("url_list"))
+        clean = [u for u in raw_urls if "water" not in u.lower()]
+        pool = clean or raw_urls
         if not pool:
             # 没有 url_list 才退到 download_url_list（会带水印，但总比没有强）
-            pool = entry.get("download_url_list") or []
-        if not pool:
-            continue
-        # 同一条图的不同 CDN 节点内容一致，优先 jpeg 便于后续处理
-        ranked = sorted(pool, key=lambda u: (
-            0 if "water" not in u.lower() else 1,
-            0 if ".jpeg" in u.lower() else 1,
-        ))
-        urls.append(ranked[0].replace("http://", "https://"))
-    return urls
+            pool = _as_url_list(entry.get("download_url_list"))
+        still = None
+        if pool:
+            # 同一条图的不同 CDN 节点内容一致，优先 jpeg 便于后续处理
+            ranked = sorted(pool, key=lambda u: (
+                0 if "water" not in u.lower() else 1,
+                0 if ".jpeg" in u.lower() else 1,
+            ))
+            still = ranked[0].replace("http://", "https://")
+
+        v = entry.get("video") or {}
+        clip_urls = [u.replace("http://", "https://") for u in
+                     _as_url_list(v.get("play_addr") or v.get("playAddr"))]
+        items.append({
+            "still": still,
+            "clip_urls": clip_urls,
+            "clip_duration": v.get("duration"),
+            "clip_width": v.get("width"),
+            "clip_height": v.get("height"),
+            "clip_type": entry.get("clip_type"),
+            "live_photo_type": entry.get("live_photo_type"),
+        })
+    return items
+
+
+def _pick_image_urls(ad: dict) -> list[str]:
+    """兼容旧调用：只返回静态图地址。"""
+    return [it["still"] for it in _pick_image_items(ad) if it["still"]]
 
 
 def _as_url_list(node) -> list[str]:
-    """把 url_list / urlList / 裸字符串 / 字符串数组统一成 URL 列表。"""
+    """把 url_list / urlList / 裸字符串 / 字符串数组 / [{src}] 统一成 URL 列表。"""
     if isinstance(node, str):
         return [node]
     if isinstance(node, list):
-        return [u for u in node if isinstance(u, str)]
+        out = []
+        for u in node:
+            if isinstance(u, str):
+                out.append(u)
+            elif isinstance(u, dict) and isinstance(u.get("src"), str):
+                out.append(u["src"])
+        return out
     if isinstance(node, dict):
         for key in ("url_list", "urlList"):
-            v = node.get(key)
-            if isinstance(v, list):
-                return [u for u in v if isinstance(u, str)]
-            if isinstance(v, str):
-                return [v]
+            if key in node:
+                return _as_url_list(node[key])
     return []
 
 
@@ -543,7 +572,7 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
               make_gif: bool = False, images_only: bool = False,
               video_only: bool = False, prefer_jpg: bool = True,
               want_audio: bool = False, want_music: bool = False,
-              audio_format: str = "m4a") -> dict:
+              audio_format: str = "m4a", want_motion: bool = True) -> dict:
     if douyin_cdp is None:
         raise DouyinError("缺少 douyin_cdp.py，请确保它和本脚本在同一个文件夹")
 
@@ -558,35 +587,65 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
     kind = "unknown"
 
     # ---- 图集 ----
-    image_urls = _pick_image_urls(ad)
-    if image_urls:
+    image_items = [it for it in _pick_image_items(ad)
+                   if it["still"] or it["clip_urls"]]
+    if image_items:
         kind = "images"
-        for idx, url in enumerate(image_urls, 1):
-            ext = "jpg"
-            low = url.lower()
-            for cand, e in ((".png", "png"), (".webp", "webp"), (".gif", "gif")):
-                if cand in low:
-                    ext = e
-                    break
-            path = os.path.join(out_dir, f"douyin_{aweme_id}_{idx:02d}.{ext}")
-            try:
-                size = _download_url(url, path)
-                info = _sniff_image(path)
-                if not info.get("ok"):
-                    raise DouyinError(f"第 {idx} 张不是有效图片（可能是错误页）")
-                # webp 转 JPG：本地播放器/看图软件对 webp 支持参差，JPG 更省事
-                if prefer_jpg and info.get("format") in ("webp", "heic"):
-                    jpg_path = os.path.splitext(path)[0] + ".jpg"
-                    conv = to_jpg(path, jpg_path)
-                    if conv:
-                        os.remove(path)
-                        path = jpg_path
-                        size = conv["bytes"]
-                        info = _sniff_image(path)
-                files.append({"path": os.path.abspath(path), "bytes": size,
-                              "index": idx, **info})
-            except DouyinError as e:
-                files.append({"path": None, "index": idx, "ok": False, "error": str(e)})
+        for idx, item in enumerate(image_items, 1):
+            url = item["still"]
+            if url:
+                ext = "jpg"
+                low = url.lower()
+                for cand, e in ((".png", "png"), (".webp", "webp"), (".gif", "gif")):
+                    if cand in low:
+                        ext = e
+                        break
+                path = os.path.join(out_dir, f"douyin_{aweme_id}_{idx:02d}.{ext}")
+                try:
+                    size = _download_url(url, path)
+                    info = _sniff_image(path)
+                    if not info.get("ok"):
+                        raise DouyinError(f"第 {idx} 张不是有效图片（可能是错误页）")
+                    # webp 转 JPG：本地播放器/看图软件对 webp 支持参差，JPG 更省事
+                    if prefer_jpg and info.get("format") in ("webp", "heic"):
+                        jpg_path = os.path.splitext(path)[0] + ".jpg"
+                        conv = to_jpg(path, jpg_path)
+                        if conv:
+                            os.remove(path)
+                            path = jpg_path
+                            size = conv["bytes"]
+                            info = _sniff_image(path)
+                    files.append({"path": os.path.abspath(path), "bytes": size,
+                                  "kind": "image", "index": idx, **info})
+                except DouyinError as e:
+                    files.append({"path": None, "kind": "image", "index": idx,
+                                  "ok": False, "error": str(e)})
+
+            # 动图/实况：动画在 images[i].video 里，下载成同编号的 mp4
+            if item["clip_urls"] and want_motion:
+                mpath = os.path.join(out_dir, f"douyin_{aweme_id}_{idx:02d}.mp4")
+                try:
+                    msize = _download_url(item["clip_urls"][0], mpath)
+                    minfo = probe(mpath)
+                    if not minfo.get("ok"):
+                        raise DouyinError("动图/实况片段不是有效视频")
+                    files.append({"path": os.path.abspath(mpath), "bytes": msize,
+                                  "kind": "motion", "index": idx, **minfo})
+                    if make_gif:
+                        gif_path = os.path.join(
+                            out_dir, f"douyin_{aweme_id}_{idx:02d}.gif")
+                        try:
+                            g = to_gif(mpath, gif_path)
+                            files.append({"path": os.path.abspath(gif_path),
+                                          "bytes": g["bytes"], "kind": "motion_gif",
+                                          "index": idx, "ok": True})
+                        except DouyinError as e:
+                            files.append({"path": None, "kind": "motion_gif",
+                                          "index": idx, "ok": False,
+                                          "error": str(e)})
+                except DouyinError as e:
+                    files.append({"path": None, "kind": "motion", "index": idx,
+                                  "ok": False, "error": str(e)})
 
         # 图文作品没有视频音轨：--audio 等价于 --music
         if want_audio and not want_music:
@@ -599,7 +658,7 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
                 files.append({"path": None, "kind": wanted, "ok": False, "error": str(e)})
 
     # ---- 视频 ----
-    if not image_urls or (video_only and ad.get("video")):
+    if not image_items or (video_only and ad.get("video")):
         if ad.get("video", {}).get("play_addr"):
             kind = "video"
             url, tier = _pick_video_url(ad, quality)
@@ -625,7 +684,7 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
                 except DouyinError as e:
                     files.append({"path": None, "kind": "music", "ok": False,
                                   "error": str(e)})
-        elif not image_urls:
+        elif not image_items:
             raise DouyinError("这条作品既没有视频也没有图片，无法下载")
 
     return {
@@ -656,14 +715,16 @@ def _print_result(r: dict) -> None:
     for f in r["files"]:
         fk = f.get("kind")
         if not f.get("path"):
-            label = {"audio": "音频", "music": "配乐", "video": "视频",
-                     "gif": "GIF"}.get(fk, f"第 {f.get('index')} 项")
+            label = {"image": "图片", "audio": "音频", "music": "配乐",
+                     "video": "视频", "motion": "动图",
+                     "motion_gif": "动图GIF", "gif": "GIF"}.get(
+                         fk, f"第 {f.get('index')} 项")
             print(f"     ! {label}失败: {f.get('error', '')[:100]}")
             continue
         extra = ""
-        if fk == "video" and f.get("width"):
+        if fk in ("video", "motion") and f.get("width"):
             extra = f"  {f['width']}x{f['height']}  {f.get('duration')}s"
-        elif fk == "gif":
+        elif fk in ("gif", "motion_gif"):
             extra = "  (GIF)"
         elif fk in ("audio", "music"):
             extra = f"  {f.get('format') or f.get('codec') or ''}"
@@ -691,13 +752,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("-q", "--quality", default="best",
                     choices=["best", "1080", "720", "540", "480", "360"],
                     help="视频清晰度（默认最高）")
-    ap.add_argument("--to-gif", action="store_true", help="视频额外转一份 GIF")
+    ap.add_argument("--to-gif", action="store_true", help="视频/动图额外转一份 GIF")
     ap.add_argument("--audio", action="store_true",
                     help="额外导出视频原声（从 mp4 抽音轨，需要 ffmpeg；图文作品自动改为下配乐）")
     ap.add_argument("--music", action="store_true",
                     help="额外下载作品配乐/音乐（mp3，不需要 ffmpeg）")
     ap.add_argument("--audio-format", default="m4a", choices=["m4a", "mp3"],
                     help="--audio 的音轨格式（默认 m4a 无损复制，mp3 需重编码）")
+    ap.add_argument("--still-only", action="store_true",
+                    help="图集只保存静态图，不保存动图/实况片段")
     ap.add_argument("--images-only", action="store_true",
                     help="（已废弃）现在默认就不下载配乐，保留参数仅为兼容")
     ap.add_argument("--video-only", action="store_true", help="只下视频")
@@ -729,7 +792,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                                      video_only=args.video_only,
                                      want_audio=args.audio,
                                      want_music=args.music,
-                                     audio_format=args.audio_format))
+                                     audio_format=args.audio_format,
+                                     want_motion=not args.still_only))
         except Exception as e:  # noqa: BLE001
             failures.append({"target": t, "error": str(e)})
 

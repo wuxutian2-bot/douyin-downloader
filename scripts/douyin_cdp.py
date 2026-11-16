@@ -366,6 +366,29 @@ def extract_from_flight(c) -> dict | None:
     return None
 
 
+def _extract_urls(node) -> list[str]:
+    """从 playAddr / play_addr 取 URL 列表。
+
+    兼容三种形态：`{urlList: [...]}`、`{url_list: [...]}`、`[{src: "..."}]`。
+    动图/实况的 `video.playAddr` 是后一种，直接 .get("urlList") 会拿到空。
+    """
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, list):
+        out = []
+        for item in node:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("src"), str):
+                out.append(item["src"])
+        return out
+    if isinstance(node, dict):
+        for key in ("url_list", "urlList"):
+            if key in node:
+                return _extract_urls(node[key])
+    return []
+
+
 def _normalize_camel(ad: dict) -> dict:
     """Flight 数据是 camelCase，转成下载器使用的 snake_case 结构。"""
     def g(*names, default=None):
@@ -416,19 +439,40 @@ def _normalize_camel(ad: dict) -> dict:
             mus.get("audition_duration") or mus.get("auditionDuration"))
         out["music"] = mm
 
-    # images: [{width,height,uri,urlList:[...]}] → [{url_list:[...]}]
+    # images: [{width,height,uri,urlList:[...],video:{playAddr}}] → snake_case
+    # 注意 video 一定不能丢：动图/实况的动画就在 images[i].video.play_addr 里，
+    # 只留 url_list 的话下到的只是首帧静态图。
     imgs = g("images", "image_list", "imageList", default=[]) or []
     norm_imgs = []
     for it in imgs:
         if not isinstance(it, dict):
             continue
-        urls = it.get("url_list") or it.get("urlList") or it.get("download_url_list") or []
-        norm_imgs.append({
+        urls = (it.get("url_list") or it.get("urlList")
+                or it.get("download_url_list") or it.get("downloadUrlList") or [])
+        item = {
             "url_list": urls,
-            "download_url_list": it.get("downloadUrlList") or [],
+            "download_url_list": (it.get("download_url_list")
+                                  or it.get("downloadUrlList") or []),
             "width": it.get("width"),
             "height": it.get("height"),
-        })
+            "clip_type": (it.get("clip_type") if it.get("clip_type") is not None
+                          else it.get("clipType")),
+            "live_photo_type": (it.get("live_photo_type")
+                                if it.get("live_photo_type") is not None
+                                else it.get("livePhotoType")),
+        }
+        v = it.get("video")
+        if isinstance(v, dict) and v:
+            clip_urls = _extract_urls(v.get("play_addr") or v.get("playAddr"))
+            if clip_urls:
+                item["video"] = {
+                    "play_addr": {"url_list": clip_urls},
+                    "duration": v.get("duration"),
+                    "width": v.get("width"),
+                    "height": v.get("height"),
+                    "data_size": v.get("data_size") or v.get("dataSize"),
+                }
+        norm_imgs.append(item)
     out["images"] = norm_imgs
 
     # video：Flight 里的直链字段也是 camelCase
@@ -436,31 +480,32 @@ def _normalize_camel(ad: dict) -> dict:
     if isinstance(video, dict) and video:
         vid = dict(video)
         pa = video.get("play_addr") or video.get("playAddr") or {}
-        if isinstance(pa, list):          # 某些结构里 playAddr 直接是 URL 数组
-            pa = {"url_list": pa}
-        if isinstance(pa, dict) and pa:
+        pd = pa if isinstance(pa, dict) else {}
+        pa_urls = _extract_urls(pa)
+        if pa_urls:
             vid["play_addr"] = {
-                "url_list": pa.get("url_list") or pa.get("urlList") or [],
-                "width": pa.get("width"),
-                "height": pa.get("height"),
-                "data_size": pa.get("data_size") or pa.get("dataSize"),
+                "url_list": pa_urls,
+                "width": pd.get("width") or video.get("width"),
+                "height": pd.get("height") or video.get("height"),
+                "data_size": (pd.get("data_size") or pd.get("dataSize")
+                              or video.get("dataSize")),
             }
         brs = []
         for b in (video.get("bit_rate") or video.get("bitRate") or []):
             if not isinstance(b, dict):
                 continue
             p = b.get("play_addr") or b.get("playAddr") or {}
-            if isinstance(p, list):
-                p = {"url_list": p}
-            if not isinstance(p, dict):
+            p_urls = _extract_urls(p)
+            if not p_urls:
                 continue
+            bd = p if isinstance(p, dict) else {}
             brs.append({
                 "gear_name": b.get("gear_name") or b.get("gearName") or "",
                 "bit_rate": b.get("bit_rate") or b.get("bitRate") or 0,
                 "play_addr": {
-                    "url_list": p.get("url_list") or p.get("urlList") or [],
-                    "width": p.get("width"),
-                    "height": p.get("height"),
+                    "url_list": p_urls,
+                    "width": bd.get("width") or b.get("width"),
+                    "height": bd.get("height") or b.get("height"),
                 },
             })
         vid["bit_rate"] = brs

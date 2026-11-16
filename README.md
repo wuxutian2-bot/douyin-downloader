@@ -1,8 +1,8 @@
 # 抖音作品下载器 · Douyin Downloader
 
-> 给一个抖音链接，把作品原片存到本地 —— 视频取最高清晰度无水印源，图集取原图，需要时转 GIF，
-> 也能按需导出视频原声或作品配乐。完全本地运行，**零第三方依赖**，
-> 同时也是一个可被 Agent 直接加载的 Skill。
+> 给一个抖音链接，把作品原片存到本地 —— 视频取最高清晰度无水印源，图集取原图，
+> 动图/实况连动画一起存，需要时转 GIF，也能按需导出视频原声或作品配乐。
+> 完全本地运行，**零第三方依赖**，同时也是一个可被 Agent 直接加载的 Skill。
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
@@ -16,7 +16,8 @@
 - **无水印原片**：视频走 `video.bit_rate` 最高档；图集只用 `url_list` 的干净原图，避开带「抖音号：xxx」水印的 `download_url_list`。
 - **按需音频**：`--audio` 抽视频原声（m4a 无损 / mp3），`--music` 下作品配乐（mp3）。默认一个音频文件都不产出。
 - **零依赖**：只用 Python 标准库，`pip install` 一条都不用。CDP 客户端是自己实现的 RFC6455 WebSocket。
-- **三种作品全覆盖**：视频、图文/图集、动图 GIF。
+- **四类作品全覆盖**：视频、图文/图集、动图/实况、GIF。
+- **动图不再只剩首帧**：图集条目里的动图/实况会连 `_01.mp4` 一起存，默认不丢动画。
 - **健壮解析**：短链、长链、裸作品 ID、整段分享文案都能直接喂进去。
 - **可编程**：`--json` 输出结构化结果，方便别的程序调用。
 - **可批量**：`--batch links.txt` 一行一个链接。
@@ -95,10 +96,13 @@ python douyin_dl.py "7.17 复制此链接打开抖音 https://v.douyin.com/XXXX/
 # 落地到指定目录
 python douyin_dl.py "<链接>" -o D:\my\videos
 
-# 图集（自动逐张下载，webp 转 JPG）
+# 图集 / 动图（自动逐张下载；有动画的连 _01.mp4 一起存）
 python douyin_dl.py "https://www.douyin.com/note/7697265979428200050"
 
-# 视频额外输出一份 GIF（12fps / 480px 宽）
+# 只要静态图，不要动图/实况片段
+python douyin_dl.py "<链接>" --still-only
+
+# 视频或动图额外输出 GIF（12fps / 480px 宽）
 python douyin_dl.py "<链接>" --to-gif
 
 # 额外导出视频原声（m4a，需要 ffmpeg）
@@ -126,9 +130,23 @@ python douyin_dl.py "<链接>" --json
 |---|---|
 | 视频 | `douyin_<id>.mp4` — 最高清晰度，无水印 |
 | 图集 | `douyin_<id>_01.jpg`、`_02.jpg` … — 原图，按张编号 |
+| 动图/实况 | 额外 `douyin_<id>_01.mp4` … — 每张图的动画，默认保存 |
+| `--still-only` | 不产出动图 mp4，只留静态图 |
 | `--audio` | 额外 `douyin_<id>_audio.m4a` — 视频原声；`--audio-format mp3` 时为 `.mp3` |
 | `--music` | 额外 `douyin_<id>_music.mp3` — 作品配乐/音乐轨 |
-| `--to-gif` | 额外 `douyin_<id>.gif` |
+| `--to-gif` | 额外 `douyin_<id>.gif`；动图作品额外 `_01.gif` … |
+
+### 动图 / 实况
+
+抖音的动图/实况作品，每张图其实是「静态首帧 + 一段短 mp4」（片段通常带声音）。
+
+| 产出 | 说明 |
+|---|---|
+| `douyin_<id>_01.jpg` | 首帧原图 |
+| `douyin_<id>_01.mp4` | 动画片段（h264 + aac） |
+
+默认两个都存；只要静态图加 `--still-only`，要 GIF 再加 `--to-gif`。
+普通图集没有动画，不会多出 `_01.mp4`。
 
 ### 音频与配乐
 
@@ -164,7 +182,8 @@ git clone https://github.com/wuxutian2-bot/douyin-downloader.git \
 1. **优先解析 `window.__pace_f`（React Flight）** —— 它同时覆盖 `/video/<id>` 和 `/note/<id>`，`/note/` 页甚至不发 detail 请求。字段是 camelCase（`urlList` / `authorInfo` / `mediaType`）。
 2. **视频页可走 CDP 网络响应** —— 监听 `Network.responseReceived`，一发现 `aweme/v1/web/aweme/detail/` 立刻 `getResponseBody`，晚一步浏览器就丢弃缓冲。
 3. **图集有两套 URL** —— `url_list` 是干净原图，`download_url_list` 是水印版，取错就会下到带水印的图。
-4. **音频没有独立直链字段** —— `video.audio` 通常是空壳；只能从 `music.play_url` 拿音乐轨，或用 ffmpeg 从 mp4 抽音轨。
+4. **动图/实况的动画在 `images[i].video.play_addr`** —— `url_list` 只是首帧，普通图集没有 `video`。归一化时丢掉这个字段，动图就会退化成一张静图。
+5. **音频没有独立直链字段** —— `video.audio` 通常是空壳；只能从 `music.play_url` 拿音乐轨，或用 ffmpeg 从 mp4 抽音轨。
 
 常见踩坑（UA、`/json/new` 必须 PUT、验证码页、CDN 直链会过期、`/note/` 的 `author` 是空壳等）都写在 `SKILL.md` 里了。
 
@@ -183,6 +202,10 @@ git clone https://github.com/wuxutian2-bot/douyin-downloader.git \
 
 **图集只下到 1 张**
 作品本身就只有 1 张图，数量以作品实际为准。
+
+**动图下载下来只有一张静态图**
+v1.2 起已修复：动图/实况会额外保存 `_01.mp4`。如果目录里只有 jpg，确认没加
+`--still-only`，并检查 `images[i].video.play_addr` 是否非空。GIF 需要另外加 `--to-gif`。
 
 **图集怎么没有 mp3 了？**
 v1.1 起音频改为按需下载，默认只存原片/原图。要配乐就加 `--music`。
