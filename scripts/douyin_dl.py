@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""douyin_dl.py — 抖音作品下载器（视频 / 图集 / 动图 GIF）
+"""douyin_dl.py — 抖音作品下载器（视频 / 图集 / 动图 GIF / 音频）
 
 给一个抖音链接，把作品原片存到本地。只依赖 Python 标准库 + 本机 Chrome/Edge。
 
@@ -9,6 +9,9 @@
     python douyin_dl.py <链接> --json
     python douyin_dl.py <链接> --to-gif        # 视频转 GIF
     python douyin_dl.py <链接> -q 720          # 指定清晰度
+    python douyin_dl.py <链接> --audio         # 额外导出视频原声（需 ffmpeg）
+    python douyin_dl.py <链接> --music         # 额外下载配乐/音乐（mp3）
+    python douyin_dl.py <链接> --audio --music # 两个都要
 
 支持的输入：
     https://v.douyin.com/XXXX/                   分享短链
@@ -18,9 +21,13 @@
     整段分享文案（自动从中提取链接）
 
 产出：
-    视频  → douyin_<id>.mp4       （最高清晰度，无水印）
-    图集  → douyin_<id>_01.jpg …  （原图，按张顺序编号）
-    图表带音乐 → douyin_<id>.mp3  （附带的背景音乐，如果有）
+    视频  → douyin_<id>.mp4          （最高清晰度，无水印）
+    图集  → douyin_<id>_01.jpg …     （原图，按张顺序编号）
+    音频  → douyin_<id>_audio.m4a    （--audio，从视频抽出的原声，默认无损复制）
+    配乐  → douyin_<id>_music.mp3    （--music，作品自带音乐轨）
+    GIF   → douyin_<id>.gif          （--to-gif）
+
+音频/配乐默认**不下载**，只有显式加 --audio / --music 才产出。
 """
 from __future__ import annotations
 
@@ -227,16 +234,55 @@ def _pick_image_urls(ad: dict) -> list[str]:
     return urls
 
 
+def _as_url_list(node) -> list[str]:
+    """把 url_list / urlList / 裸字符串 / 字符串数组统一成 URL 列表。"""
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, list):
+        return [u for u in node if isinstance(u, str)]
+    if isinstance(node, dict):
+        for key in ("url_list", "urlList"):
+            v = node.get(key)
+            if isinstance(v, list):
+                return [u for u in v if isinstance(u, str)]
+            if isinstance(v, str):
+                return [v]
+    return []
+
+
 def _pick_music_url(ad: dict) -> str | None:
-    """图集附带的背景音乐。"""
+    """作品自带的音乐轨（原声或配乐）。
+
+    视频页 detail 是 snake_case，图文页 Flight 数据是 camelCase，两种都要认。
+    注意：`video.audio` / `video.bit_rate_audio` 经常是空对象，别指望有独立音轨地址。
+    """
     music = ad.get("music") or {}
-    for key in ("play_url", "play_url_h265"):
-        v = music.get(key)
-        if isinstance(v, dict):
-            lst = v.get("url_list") or []
-            if lst:
-                return lst[0].replace("http://", "https://")
+    for key in ("play_url", "playUrl", "play_url_h265", "playUrlH265"):
+        for u in _as_url_list(music.get(key)):
+            if u.strip():
+                return u.replace("http://", "https://")
     return None
+
+
+def _music_meta(ad: dict) -> dict:
+    """音乐轨的元信息，用于提示试听片段和输出展示。"""
+    music = ad.get("music") or {}
+
+    def first(*names, default=None):
+        for n in names:
+            v = music.get(n)
+            if v not in (None, ""):
+                return v
+        return default
+
+    return {
+        "title": first("title", default="") or "",
+        "author": first("author", default="") or "",
+        "duration": int(first("duration", default=0) or 0),
+        "audition": int(first("audition_duration", "auditionDuration", default=0) or 0),
+        "is_original_sound": bool(first("is_original_sound", "isOriginalSound", default=False)),
+        "prevent_download": bool(first("prevent_download", "preventDownload", default=False)),
+    }
 
 
 # ------------------------------------------------------------------ 校验
@@ -276,6 +322,129 @@ def probe(path: str) -> dict:
         return {"ok": ok, "size": size, "check": "header-only"}
     except OSError as e:
         return {"ok": False, "error": str(e)}
+
+
+def _has_audio_stream(path: str) -> bool | None:
+    """视频里有没有音轨。None = 没有 ffprobe，无法判断。"""
+    if not shutil.which("ffprobe"):
+        return None
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=60)
+        if out.returncode == 0:
+            return bool(out.stdout.strip())
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def probe_audio(path: str) -> dict:
+    """音频校验：有 ffprobe 就读真实编码/时长，没有就看文件头。"""
+    if shutil.which("ffprobe"):
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-print_format", "json",
+                 "-show_format", "-show_streams", path],
+                capture_output=True, text=True, timeout=60)
+            if out.returncode == 0:
+                d = json.loads(out.stdout)
+                au = next((s for s in d.get("streams", [])
+                           if s.get("codec_type") == "audio"), {})
+                fmt = d.get("format", {})
+                if au:
+                    return {
+                        "ok": True,
+                        "codec": au.get("codec_name"),
+                        "duration": round(float(fmt.get("duration", 0) or 0), 2),
+                        "size": int(fmt.get("size", 0) or 0),
+                        "bit_rate": int(fmt.get("bit_rate", 0) or 0),
+                    }
+                return {"ok": False, "error": "文件里没有音频流"}
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 无 ffprobe：只认文件头
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+        size = os.path.getsize(path)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    kind = None
+    if head[:3] == b"ID3" or (head[:1] == b"\xff" and head[1:2] and head[1] & 0xE0 == 0xE0):
+        kind = "mp3"
+    elif b"ftyp" in head[:12]:
+        kind = "m4a"
+    elif head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        kind = "wav"
+    elif head[:4] == b"OggS":
+        kind = "ogg"
+    return {"ok": bool(kind), "format": kind, "size": size, "check": "header-only"}
+
+
+def extract_audio(src_mp4: str, out_base: str, fmt: str = "m4a") -> dict:
+    """从视频里抽出音轨。
+
+    默认 m4a + `-c:a copy`：不重编码、秒出，音质和视频里完全一致。
+    fmt=mp3 时用 libmp3lame 重编码；源不是 AAC 时 m4a 会退到 AAC 重编码。
+    """
+    if not shutil.which("ffmpeg"):
+        raise DouyinError("提取音频需要 ffmpeg，请先安装：winget install ffmpeg")
+    fmt = "mp3" if str(fmt).lower() == "mp3" else "m4a"
+    if fmt == "mp3":
+        out = out_base + ".mp3"
+        cmds = [
+            ["ffmpeg", "-y", "-i", src_mp4, "-vn", "-c:a", "libmp3lame", "-q:a", "2", out],
+            ["ffmpeg", "-y", "-i", src_mp4, "-vn", "-c:a", "mp3", "-b:a", "192k", out],
+        ]
+    else:
+        out = out_base + ".m4a"
+        cmds = [
+            ["ffmpeg", "-y", "-i", src_mp4, "-vn", "-c:a", "copy",
+             "-movflags", "+faststart", out],
+            ["ffmpeg", "-y", "-i", src_mp4, "-vn", "-c:a", "aac", "-b:a", "192k", out],
+        ]
+    last = ""
+    for cmd in cmds:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 1024:
+            return {"path": out, "bytes": os.path.getsize(out), "format": fmt}
+        last = (r.stderr or "")[-300:]
+    try:
+        os.remove(out)          # 两次都失败时别留下半截文件
+    except OSError:
+        pass
+    raise DouyinError(f"ffmpeg 提取音频失败: {last}")
+
+
+def download_music(ad: dict, out_dir: str, aweme_id: str, kind: str = "music") -> dict:
+    """下载作品自带的音乐轨。kind="music" 存 _music.mp3，kind="audio" 存 _audio.mp3。"""
+    meta = _music_meta(ad)
+    url = _pick_music_url(ad)
+    if not url:
+        raise DouyinError("作品没有可用的音乐轨（music.play_url 为空）")
+    ext = ".mp3"
+    low = url.lower().split("?")[0]
+    for cand in (".m4a", ".aac", ".wav", ".ogg"):
+        if low.endswith(cand):
+            ext = cand
+            break
+    out = os.path.join(out_dir, f"douyin_{aweme_id}_{kind}{ext}")
+    size = _download_url(url, out)
+    info = probe_audio(out)
+    if not info.get("ok"):
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        raise DouyinError("下载到的音乐不是有效音频（可能拿到错误页或被限制下载）")
+    return {
+        "path": os.path.abspath(out), "bytes": size, "kind": kind,
+        "title": meta["title"], "music_meta": meta,
+        "format": info.get("format") or ext.lstrip("."), **info,
+    }
 
 
 def _sniff_image(path: str) -> dict:
@@ -326,9 +495,55 @@ def to_jpg(src: str, out_jpg: str) -> dict | None:
     return {"path": out_jpg, "bytes": os.path.getsize(out_jpg)}
 
 
+def _audio_from_video(ad: dict, video_path: str, video_info: dict,
+                      out_dir: str, aweme_id: str, audio_format: str,
+                      notes: list[str]) -> dict:
+    """从已下载的 mp4 抽音轨；抽不了再退回作品音乐轨。返回 file 记录。"""
+    has_audio = _has_audio_stream(video_path)
+    if has_audio is False:
+        notes.append("这条视频本身没有音轨（无声视频），无法提取音频")
+        return {"path": None, "kind": "audio", "ok": False,
+                "error": "视频没有音轨"}
+
+    if not shutil.which("ffmpeg"):
+        if _pick_music_url(ad):
+            notes.append("没装 ffmpeg，无法从视频抽音轨，已改为下载作品音乐轨")
+            try:
+                return download_music(ad, out_dir, aweme_id, "audio")
+            except DouyinError as e:
+                return {"path": None, "kind": "audio", "ok": False, "error": str(e)}
+        return {"path": None, "kind": "audio", "ok": False,
+                "error": "提取音频需要 ffmpeg：winget install ffmpeg"}
+
+    try:
+        base = os.path.splitext(video_path)[0] + "_audio"
+        res = extract_audio(video_path, base, audio_format)
+        info = probe_audio(res["path"])
+        if not info.get("ok"):
+            raise DouyinError("提取出的音频文件无效")
+        if video_info.get("duration") and info.get("duration"):
+            diff = abs(float(video_info["duration"]) - float(info["duration"]))
+            if diff > 2:
+                notes.append(
+                    f"音频 {info['duration']}s 与视频 {video_info['duration']}s 不一致，"
+                    "请检查是否截断")
+        return {"path": os.path.abspath(res["path"]), "bytes": res["bytes"],
+                "kind": "audio", "format": res["format"], **info}
+    except DouyinError as e:
+        if not _pick_music_url(ad):
+            return {"path": None, "kind": "audio", "ok": False, "error": str(e)}
+        notes.append(f"{e}；已改为下载作品音乐轨")
+        try:
+            return download_music(ad, out_dir, aweme_id, "audio")
+        except DouyinError as e2:
+            return {"path": None, "kind": "audio", "ok": False, "error": str(e2)}
+
+
 def fetch_one(target: str, out_dir: str, quality: str = "best",
               make_gif: bool = False, images_only: bool = False,
-              video_only: bool = False, prefer_jpg: bool = True) -> dict:
+              video_only: bool = False, prefer_jpg: bool = True,
+              want_audio: bool = False, want_music: bool = False,
+              audio_format: str = "m4a") -> dict:
     if douyin_cdp is None:
         raise DouyinError("缺少 douyin_cdp.py，请确保它和本脚本在同一个文件夹")
 
@@ -339,6 +554,7 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
 
     os.makedirs(out_dir, exist_ok=True)
     files: list[dict] = []
+    notes: list[str] = []
     kind = "unknown"
 
     # ---- 图集 ----
@@ -372,16 +588,15 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
             except DouyinError as e:
                 files.append({"path": None, "index": idx, "ok": False, "error": str(e)})
 
-        # 图集背景音乐
-        music_url = _pick_music_url(ad)
-        if music_url and not images_only:
-            mpath = os.path.join(out_dir, f"douyin_{aweme_id}.mp3")
+        # 图文作品没有视频音轨：--audio 等价于 --music
+        if want_audio and not want_music:
+            notes.append("图文作品没有视频音轨，--audio 已改为保存作品配乐")
+        if want_music or want_audio:
+            wanted = "music" if want_music else "audio"
             try:
-                size = _download_url(music_url, mpath)
-                files.append({"path": os.path.abspath(mpath), "bytes": size,
-                              "kind": "music", "ok": size > 1024})
-            except DouyinError:
-                pass
+                files.append(download_music(ad, out_dir, aweme_id, wanted))
+            except DouyinError as e:
+                files.append({"path": None, "kind": wanted, "ok": False, "error": str(e)})
 
     # ---- 视频 ----
     if not image_urls or (video_only and ad.get("video")):
@@ -401,6 +616,15 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
                 g = to_gif(path, gif_path)
                 files.append({"path": os.path.abspath(gif_path), "bytes": g["bytes"],
                               "kind": "gif", "ok": True})
+            if want_audio:
+                files.append(_audio_from_video(ad, path, info, out_dir,
+                                               aweme_id, audio_format, notes))
+            if want_music:
+                try:
+                    files.append(download_music(ad, out_dir, aweme_id, "music"))
+                except DouyinError as e:
+                    files.append({"path": None, "kind": "music", "ok": False,
+                                  "error": str(e)})
         elif not image_urls:
             raise DouyinError("这条作品既没有视频也没有图片，无法下载")
 
@@ -413,6 +637,7 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
         "create_time": ad.get("create_time"),
         "page_url": f"https://www.douyin.com/{'note' if kind == 'images' else 'video'}/{aweme_id}",
         "files": files,
+        "notes": notes,
         "ok": any(f.get("ok") for f in files),
     }
 
@@ -429,25 +654,37 @@ def _print_result(r: dict) -> None:
     print(f"{flag} [{kind_cn}] {r['aweme_id']}  @{r['author']}")
     print(f"     {r['desc'][:70]}")
     for f in r["files"]:
+        fk = f.get("kind")
         if not f.get("path"):
-            print(f"     ! 第 {f.get('index')} 项失败: {f.get('error', '')[:80]}")
+            label = {"audio": "音频", "music": "配乐", "video": "视频",
+                     "gif": "GIF"}.get(fk, f"第 {f.get('index')} 项")
+            print(f"     ! {label}失败: {f.get('error', '')[:100]}")
             continue
         extra = ""
-        if f.get("kind") == "video" and f.get("width"):
+        if fk == "video" and f.get("width"):
             extra = f"  {f['width']}x{f['height']}  {f.get('duration')}s"
-        elif f.get("kind") == "gif":
+        elif fk == "gif":
             extra = "  (GIF)"
+        elif fk in ("audio", "music"):
+            extra = f"  {f.get('format') or f.get('codec') or ''}"
+            if f.get("duration"):
+                extra += f"  {f['duration']}s"
+            if fk == "music" and f.get("title"):
+                extra += f"  {f['title'][:28]}"
         elif f.get("format"):
             extra = f"  {f['format']}"
         print(f"     {os.path.basename(f['path'])}{extra}  {_fmt_size(f['bytes'])}")
         print(f"       {f['path']}")
+    for n in r.get("notes") or []:
+        print(f"     ! {n}")
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="抖音作品下载器：视频 / 图集 / 动图 GIF",
+        description="抖音作品下载器：视频 / 图集 / 动图 GIF / 音频",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="例: python douyin_dl.py \"https://v.douyin.com/xxxx/\" -o downloads")
+        epilog="例: python douyin_dl.py \"https://v.douyin.com/xxxx/\" -o downloads\n"
+               "     python douyin_dl.py \"<链接>\" --audio --music")
     ap.add_argument("targets", nargs="*", help="链接 / 分享文案 / 作品 ID")
     ap.add_argument("--batch", help="文本文件，每行一个链接或整段分享文案")
     ap.add_argument("-o", "--outdir", default="downloads", help="输出目录（默认 downloads）")
@@ -455,7 +692,14 @@ def main(argv: Iterable[str] | None = None) -> int:
                     choices=["best", "1080", "720", "540", "480", "360"],
                     help="视频清晰度（默认最高）")
     ap.add_argument("--to-gif", action="store_true", help="视频额外转一份 GIF")
-    ap.add_argument("--images-only", action="store_true", help="只下图片，不要背景音乐")
+    ap.add_argument("--audio", action="store_true",
+                    help="额外导出视频原声（从 mp4 抽音轨，需要 ffmpeg；图文作品自动改为下配乐）")
+    ap.add_argument("--music", action="store_true",
+                    help="额外下载作品配乐/音乐（mp3，不需要 ffmpeg）")
+    ap.add_argument("--audio-format", default="m4a", choices=["m4a", "mp3"],
+                    help="--audio 的音轨格式（默认 m4a 无损复制，mp3 需重编码）")
+    ap.add_argument("--images-only", action="store_true",
+                    help="（已废弃）现在默认就不下载配乐，保留参数仅为兼容")
     ap.add_argument("--video-only", action="store_true", help="只下视频")
     ap.add_argument("--json", action="store_true", help="输出 JSON（给程序调用）")
     args = ap.parse_args(list(argv) if argv is not None else None)
@@ -482,7 +726,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             results.append(fetch_one(t, args.outdir, args.quality,
                                      make_gif=args.to_gif,
                                      images_only=args.images_only,
-                                     video_only=args.video_only))
+                                     video_only=args.video_only,
+                                     want_audio=args.audio,
+                                     want_music=args.music,
+                                     audio_format=args.audio_format))
         except Exception as e:  # noqa: BLE001
             failures.append({"target": t, "error": str(e)})
 

@@ -397,6 +397,25 @@ def _normalize_camel(ad: dict) -> dict:
                 "sec_uid": ai.get("secUid") or ai.get("sec_uid") or "",
             }
 
+    # music：Flight 里直链是 playUrl/urlList，统一成 downloader 认识的 play_url/url_list
+    mus = g("music", default={}) or {}
+    if isinstance(mus, dict) and mus:
+        mm = dict(mus)
+        pu = mus.get("play_url") or mus.get("playUrl") or {}
+        if isinstance(pu, list):
+            pu = {"url_list": pu}
+        if isinstance(pu, dict) and pu:
+            mm["play_url"] = {
+                "url_list": pu.get("url_list") or pu.get("urlList") or [],
+            }
+        mm["is_original_sound"] = bool(
+            mus.get("is_original_sound") or mus.get("isOriginalSound"))
+        mm["prevent_download"] = bool(
+            mus.get("prevent_download") or mus.get("preventDownload"))
+        mm["audition_duration"] = (
+            mus.get("audition_duration") or mus.get("auditionDuration"))
+        out["music"] = mm
+
     # images: [{width,height,uri,urlList:[...]}] → [{url_list:[...]}]
     imgs = g("images", "image_list", "imageList", default=[]) or []
     norm_imgs = []

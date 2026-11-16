@@ -1,26 +1,32 @@
 ---
 name: douyin-downloader
-description: "Douyin link to video/album/GIF: local tool."
-version: 1.0.0
+description: "Douyin link to video/album/GIF/audio/music: local tool."
+version: 1.1.0
 author: tibo
 license: MIT
 platforms: [windows, linux, macos]
 metadata:
   hermes:
-    tags: [Douyin, 抖音, Video, Image, Album, GIF, Download, Chrome, CDP]
+    tags: [Douyin, 抖音, Video, Image, Album, GIF, Audio, Music, 配乐, 原声, Download, Chrome, CDP]
     related_skills: [video-download]
 ---
 
-# 抖音作品下载器（视频 / 图集 / GIF）
+# 抖音作品下载器（视频 / 图集 / GIF / 音频）
 
 给一个抖音链接，把作品的原片存到本地：视频取最高清晰度无水印源，图集取原图（自动转 JPG），
-需要时把视频转成 GIF。完全本地运行，不依赖任何第三方 Python 包。
+需要时把视频转成 GIF。用户明确要音频时，还能导出视频原声或作品配乐。
+完全本地运行，不依赖任何第三方 Python 包。
 
 ## When to Use
 
 用户粘贴抖音链接（短链 `v.douyin.com/xxx`、`/video/<id>`、`/note/<id>`、裸 19 位 ID，
 或整段分享文案）并想要其中的视频、图片、图集或 GIF。也用于用户问"这个抖音链接能下吗"、
 "帮我存下来"、"要原图"、"转个 GIF"。非抖音平台（YouTube/TikTok/B站）用 `video-download`。
+
+用户额外提到**声音/音频**时也归这里：`原声`、`视频里的声音`、`音频`、`配音`、`人声` →
+加 `--audio`；`配乐`、`BGM`、`背景音乐`、`这首歌`、`音乐` → 加 `--music`。
+**用户没提音频就不要加这两个参数**——默认只下原片/原图，一个音频文件都不产出。
+要音频时把参数加在**同一条命令**上，一次跑完，不要先下视频再单独跑一遍。
 
 **路径**：`scripts/douyin_dl.py`、`scripts/douyin_cdp.py`、`scripts/下载抖音视频.bat`、`scripts/README.md`。
 把前两个 `.py` 拷到同一目录即可运行；`README.md` 可以直接给用户看。
@@ -37,13 +43,14 @@ metadata:
    # Linux/macOS
    export CHROME_PATH=/usr/bin/google-chrome
    ```
-3. 可选：装 ffmpeg，用于图片转 JPG、视频转 GIF、以及下载后的时长校验。
+3. 可选：装 ffmpeg，用于图片转 JPG、视频转 GIF、**从视频里抽音轨**、以及下载后的时长校验。
    ```bash
    winget install ffmpeg     # Windows
    brew install ffmpeg       # macOS
    sudo apt install ffmpeg   # Debian/Ubuntu
    ```
-   没装也能跑，只是 webp 原图保持原格式、`--to-gif` 不可用、校验退化为读文件头。
+   没装也能跑，只是 webp 原图保持原格式、`--to-gif` 不可用、`--audio` 退化为直接下载音乐轨
+   （见「音频与配乐」）、校验退化为读文件头。
 
 ## 用法
 
@@ -61,8 +68,14 @@ python douyin_dl.py "https://www.douyin.com/note/7697265979428200050"
 # 视频额外转一份 GIF（12fps / 480px 宽）
 python douyin_dl.py "<链接>" --to-gif
 
-# 只要图片、不要图集附带的背景音乐
-python douyin_dl.py "<链接>" --images-only
+# 额外导出视频原声（m4a，需 ffmpeg）
+python douyin_dl.py "<链接>" --audio
+
+# 额外下载作品配乐/音乐（mp3，不需要 ffmpeg）
+python douyin_dl.py "<链接>" --music
+
+# 原声和配乐都要；原声要 mp3 就再指定格式
+python douyin_dl.py "<链接>" --audio --music --audio-format mp3
 
 # 指定清晰度
 python douyin_dl.py "<链接>" -q 720
@@ -80,8 +93,26 @@ python douyin_dl.py "<链接>" --json
 |---|---|
 | 视频 | `douyin_<id>.mp4`（最高清晰度，无水印） |
 | 图集 | `douyin_<id>_01.jpg`、`_02.jpg` …（原图，按张编号） |
-| 图集带音乐 | 额外 `douyin_<id>.mp3` |
+| `--audio` | 额外 `douyin_<id>_audio.m4a`（`--audio-format mp3` 时是 `.mp3`） |
+| `--music` | 额外 `douyin_<id>_music.mp3` |
 | `--to-gif` | 额外 `douyin_<id>.gif` |
+
+### 音频与配乐（默认不下载）
+
+| 用户说的 | 参数 | 产出 |
+|---|---|---|
+| 原声、视频里的声音、音频、配音、人声 | `--audio` | `douyin_<id>_audio.m4a`（图文作品为 `_audio.mp3`） |
+| 配乐、BGM、背景音乐、这首歌、音乐 | `--music` | `douyin_<id>_music.mp3` |
+| 两个都要 | `--audio --music` | 两个文件 |
+
+- `--audio` 从**已下载的 mp4** 里抽音轨：默认 `-c:a copy` 到 m4a，不重编码、几秒完成；
+  要 mp3 就加 `--audio-format mp3`（重编码，听感接近但非逐位一致）。
+- `--audio` 需要 ffmpeg。没装时会自动退化为下载 `music.play_url`，文件名是 `_audio.mp3`，
+  输出里带一行提示。这条音轨是抖音单独存的音乐，**不等于视频里的混音**（可能缺人声/环境声），
+  要如实转告用户，别当成原声保证。
+- 图文作品没有视频音轨，`--audio` 自动按 `--music` 处理（文件名 `_audio.mp3`）并给出提示。
+- 无声视频会明确报「视频没有音轨」，不要拿配乐冒充原声。
+- **默认不产出任何音频**：没加参数时目录里不能出现 `.mp3` / `.m4a`。图集也不再自动附 mp3。
 
 ### 双击运行（Windows）
 
@@ -115,6 +146,12 @@ python douyin_dl.py "<链接>" --json
    只有 `url_list` 完全缺失时才退到 `download_url_list`。
    页面 DOM 上的 `440x330` 小图是评论区缩略图，不是作品图，别抓错。
 
+4. **音频只有两条可靠来源。** `video.audio` / `video.bit_rate_audio` 在 detail JSON 里经常是
+   `{}` / `null`，别去找"纯音频直链"字段。`--music` 用 `music.play_url.url_list[0]`（mp3，
+   原声作品里那条就是原声）；`--audio` 从已下载的 mp4 用 `ffmpeg -vn -c:a copy` 抽音轨，
+   抽失败才退回 `music.play_url`。Flight 数据的音乐字段是 camelCase（`playUrl` / `urlList`），
+   `douyin_cdp._normalize_camel` 会统一成 snake_case。
+
 ## 关键陷阱
 
 - **别覆盖 User-Agent。** 用浏览器默认 UA 最稳。抖音对移动端 UA 或陌生指纹更容易回验证码中间页。
@@ -134,6 +171,17 @@ python douyin_dl.py "<链接>" --json
 - **图集有两套 URL，别拿错。** `url_list` 是干净原图（`tplv-dy-aweme-images-v2`），
   `download_url_list` 是带水印版（`tplv-dy-water-v10`）。用户说"有水印"时，
   先检查取的是不是 `download_url_list`，不要一上来就去搞图像修补/裁剪——源里本来就有干净的。
+- **`video.audio` 是空壳，不是音轨地址。** 实测 detail JSON 里它是 `{}`，`bit_rate_audio` 是
+  `null`。找不到"纯音频直链"是正常的，改用 `music.play_url` 或从 mp4 抽。
+- **用曲作品的 `music.play_url` 可能只有试听片段。** `music.prevent_download` 为真，或下载时长
+  明显短于 `music.duration` 时，要告诉用户"只拿到前 XX 秒"，不能当整首交差。原声作品一般
+  就是完整时长（`is_original_sound=true`）。
+- **静音视频没有音轨。** 有 ffmpeg 时 `ffprobe -select_streams a` 会返回空，这时如实说
+  "视频本身没有声音"，不要用配乐冒充原声。
+- **`--audio` 默认输出 m4a（无损复制），不是 mp3。** 用户说"要 mp3"时才加
+  `--audio-format mp3`；两者听感接近，但 mp3 是重编码，不是逐位一致。
+- **v1.1 起图集不再自动附 mp3。** 只有 `--music`（或 `--audio`）才下音频；`--images-only`
+  保留但已无实际作用，不要拿它当"关闭音乐"的理由——默认本来就关。
 - **图文页图片分辨率不高。** 图集原图常常只有 964×1216、980×922 这种尺寸（作者上传尺寸决定），不是水印或降质。要区分"作者上传尺寸小"和"工具降质"：比对 `images[i].width/height` 与下载后 ffprobe 的尺寸，一致就是原图。
 
 ## 耗时参考
@@ -158,11 +206,21 @@ mkdir _verify && cp scripts/*.py _verify/ && cd _verify
 python douyin_dl.py "https://v.douyin.com/<short>/"                        # 视频路径
 python douyin_dl.py "https://www.douyin.com/note/<id>"                     # 图文路径
 python douyin_dl.py "https://v.douyin.com/<short>/" --to-gif               # GIF 路径
+python douyin_dl.py "https://v.douyin.com/<short>/" --audio                # 抽音轨
+python douyin_dl.py "https://v.douyin.com/<short>/" --music                # 配乐
+python douyin_dl.py "https://www.douyin.com/note/<id>" --music             # 图集配乐
 ffprobe -v error -show_entries stream=width,height -of csv=p=0 <图片>       # 确认是原图尺寸
+ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 <音频>
 ```
 
 视频要看到 `[视频]` + 分辨率 ≥ 1080 宽；图集要看到 `[图集]` + 逐张 `jpeg`；
-两者都要 `成功 N/N，失败 0`。跑完删掉 `_verify/`。
+`--audio` 要看到 `_audio.m4a` 且 ffprobe 能读到 `aac` 音轨；`--music` 要看到 `_music.mp3`；
+**不带 `--audio` / `--music` 时目录里不能出现 `.mp3` / `.m4a`**。
+以上都要 `成功 N/N，失败 0`。跑完删掉 `_verify/`。
+
+`--audio` 还要在"没装 ffmpeg"的条件下跑一次：临时把 PATH 收窄到只剩 Python
+（`shutil.which("ffmpeg")` 为 `None`），确认输出出现"已改为下载作品音乐轨"的提示、文件变成
+`_audio.mp3`，而不是直接失败或静默产出空文件。
 
 **用户反馈某一项不对（水印、作者名、尺寸、张数）时，先把产物真的看一眼再回答。**
 用 `vision_analyze` 带 `region` 裁到底部/角落看水印，用 `ffprobe` 看尺寸，
@@ -176,7 +234,7 @@ ffprobe -v error -show_entries stream=width,height -of csv=p=0 <图片>       # 
 
 | 文件 | 作用 |
 |---|---|
-| `scripts/douyin_dl.py` | 主程序：解析链接、挑档、下载、校验、转格式 |
+| `scripts/douyin_dl.py` | 主程序：解析链接、挑档、下载、校验、转格式、抽音轨/配乐 |
 | `scripts/douyin_cdp.py` | CDP 抓取器：自带 WebSocket 客户端，负责拿到作品 JSON |
 | `scripts/下载抖音视频.bat` | Windows 双击入口（ASCII 主体 + GBK + CRLF） |
 | `scripts/README.md` | 面向使用者的说明 |

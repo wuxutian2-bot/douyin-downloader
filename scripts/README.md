@@ -1,6 +1,7 @@
 # 抖音作品下载器
 
-给一个抖音链接，把作品原片存到本地。支持**视频**、**图集**、**动图 GIF**。
+给一个抖音链接，把作品原片存到本地。支持**视频**、**图集**、**动图 GIF**，
+需要时还能导出**视频原声**或**作品配乐**。
 纯 Python 标准库 + 本机浏览器，不需要 `pip install` 任何东西。
 
 ---
@@ -49,8 +50,14 @@ python douyin_dl.py "<链接>" --to-gif
 # 指定清晰度（默认最高）
 python douyin_dl.py "<链接>" -q 720
 
-# 图集只要图片，不要背景音乐
-python douyin_dl.py "<链接>" --images-only
+# 额外导出视频原声（m4a，需要 ffmpeg）
+python douyin_dl.py "<链接>" --audio
+
+# 额外下载配乐/音乐（mp3，不需要 ffmpeg）
+python douyin_dl.py "<链接>" --music
+
+# 原声要 mp3 格式
+python douyin_dl.py "<链接>" --audio --audio-format mp3
 
 # 批量：links.txt 里一行一个
 python douyin_dl.py --batch links.txt
@@ -67,8 +74,12 @@ python douyin_dl.py "<链接>" --json
 |---|---|
 | 视频 | `douyin_<id>.mp4` — 最高清晰度，无水印 |
 | 图集 | `douyin_<id>_01.jpg`、`_02.jpg` … — 原图，自动从 webp 转 JPG |
-| 图集带音乐 | 额外 `douyin_<id>.mp3` |
+| `--audio` | 额外 `douyin_<id>_audio.m4a`（或 `--audio-format mp3` 时的 `.mp3`） |
+| `--music` | 额外 `douyin_<id>_music.mp3` |
 | `--to-gif` | 额外 `douyin_<id>.gif` |
+
+默认不下载音频。`--audio` 抽的是视频里实际听到的声音（需要 ffmpeg）；
+`--music` 下的是抖音单独存的那条音乐轨（mp3，不需要 ffmpeg）。
 
 ---
 
@@ -85,7 +96,7 @@ set CHROME_PATH=D:\Chrome\chrome.exe
 export CHROME_PATH=/usr/bin/google-chrome
 ```
 
-**可选**：ffmpeg。用于 webp 转 JPG、视频转 GIF、以及下载后校验。
+**可选**：ffmpeg。用于 webp 转 JPG、视频转 GIF、从视频抽音轨（`--audio`）、以及下载后校验。
 ```bash
 winget install ffmpeg    # Windows
 brew install ffmpeg      # macOS
@@ -125,6 +136,12 @@ sudo apt install ffmpeg  # Debian/Ubuntu
 
 **下载的图片打不开**
 装 ffmpeg，工具会自动把 webp 转成 JPG。
+
+**没有 mp3 / 音频文件**
+音频是按需下载的，默认不产出。要原声加 `--audio`，要配乐加 `--music`。
+
+**`--audio` 提示「已改为下载作品音乐轨」**
+说明本机没找到 ffmpeg（或抽轨失败）。装上 ffmpeg 就能拿到视频里实际听到的混音。
 
 ---
 
