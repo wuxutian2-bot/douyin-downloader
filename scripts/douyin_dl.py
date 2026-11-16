@@ -13,6 +13,7 @@
     python douyin_dl.py <链接> --music         # 额外下载配乐/音乐（mp3）
     python douyin_dl.py <链接> --audio --music # 两个都要
     python douyin_dl.py <链接> --still-only    # 图集只存静态图，不要动图/实况片段
+    python douyin_dl.py <链接> --motion-format mp4  # 动图保留 mp4（带原声）
 
 支持的输入：
     https://v.douyin.com/XXXX/                   分享短链
@@ -24,13 +25,14 @@
 产出：
     视频  → douyin_<id>.mp4          （最高清晰度，无水印）
     图集  → douyin_<id>_01.jpg …     （原图，按张顺序编号）
-    动图  → douyin_<id>_01.mp4 …     （图集里的动图/实况片段，默认自动保存）
+    动图  → douyin_<id>_01.gif …     （图集里的动图/实况，默认转 GIF）
+    动图  → douyin_<id>_01.mp4 …     （--motion-format mp4，保留原声和画质）
     音频  → douyin_<id>_audio.m4a    （--audio，从视频抽出的原声，默认无损复制）
     配乐  → douyin_<id>_music.mp3    （--music，作品自带音乐轨）
-    GIF   → douyin_<id>.gif          （--to-gif）
+    GIF   → douyin_<id>.gif          （--to-gif，针对普通视频）
 
 音频/配乐默认**不下载**，只有显式加 --audio / --music 才产出。
-动图/实况片段默认保存；只要静态图时加 --still-only。
+动图/实况默认保存成 GIF；只要静态图时加 --still-only。
 """
 from __future__ import annotations
 
@@ -572,7 +574,8 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
               make_gif: bool = False, images_only: bool = False,
               video_only: bool = False, prefer_jpg: bool = True,
               want_audio: bool = False, want_music: bool = False,
-              audio_format: str = "m4a", want_motion: bool = True) -> dict:
+              audio_format: str = "m4a", want_motion: bool = True,
+              motion_format: str = "gif") -> dict:
     if douyin_cdp is None:
         raise DouyinError("缺少 douyin_cdp.py，请确保它和本脚本在同一个文件夹")
 
@@ -584,6 +587,7 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
     os.makedirs(out_dir, exist_ok=True)
     files: list[dict] = []
     notes: list[str] = []
+    motion_note_added = False
     kind = "unknown"
 
     # ---- 图集 ----
@@ -621,7 +625,7 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
                     files.append({"path": None, "kind": "image", "index": idx,
                                   "ok": False, "error": str(e)})
 
-            # 动图/实况：动画在 images[i].video 里，下载成同编号的 mp4
+            # 动图/实况：动画在 images[i].video 里；默认转 GIF，mp4 可保留原声
             if item["clip_urls"] and want_motion:
                 mpath = os.path.join(out_dir, f"douyin_{aweme_id}_{idx:02d}.mp4")
                 try:
@@ -629,20 +633,31 @@ def fetch_one(target: str, out_dir: str, quality: str = "best",
                     minfo = probe(mpath)
                     if not minfo.get("ok"):
                         raise DouyinError("动图/实况片段不是有效视频")
-                    files.append({"path": os.path.abspath(mpath), "bytes": msize,
-                                  "kind": "motion", "index": idx, **minfo})
-                    if make_gif:
+                    motion_file = {"path": os.path.abspath(mpath), "bytes": msize,
+                                   "kind": "motion", "index": idx, **minfo}
+                    if motion_format != "gif":
+                        files.append(motion_file)
+                    elif not shutil.which("ffmpeg"):
+                        if not motion_note_added:
+                            notes.append("没装 ffmpeg，动图无法转 GIF，已保存为 mp4")
+                            motion_note_added = True
+                        files.append(motion_file)
+                    else:
                         gif_path = os.path.join(
                             out_dir, f"douyin_{aweme_id}_{idx:02d}.gif")
                         try:
                             g = to_gif(mpath, gif_path)
+                        except DouyinError as e:
+                            notes.append(f"第 {idx} 张动图转 GIF 失败，已保留 mp4：{e}")
+                            files.append(motion_file)
+                        else:
+                            try:
+                                os.remove(mpath)      # 转成功就不留中间 mp4
+                            except OSError:
+                                pass
                             files.append({"path": os.path.abspath(gif_path),
                                           "bytes": g["bytes"], "kind": "motion_gif",
                                           "index": idx, "ok": True})
-                        except DouyinError as e:
-                            files.append({"path": None, "kind": "motion_gif",
-                                          "index": idx, "ok": False,
-                                          "error": str(e)})
                 except DouyinError as e:
                     files.append({"path": None, "kind": "motion", "index": idx,
                                   "ok": False, "error": str(e)})
@@ -752,7 +767,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("-q", "--quality", default="best",
                     choices=["best", "1080", "720", "540", "480", "360"],
                     help="视频清晰度（默认最高）")
-    ap.add_argument("--to-gif", action="store_true", help="视频/动图额外转一份 GIF")
+    ap.add_argument("--to-gif", action="store_true", help="普通视频额外转一份 GIF（动图默认就是 GIF）")
     ap.add_argument("--audio", action="store_true",
                     help="额外导出视频原声（从 mp4 抽音轨，需要 ffmpeg；图文作品自动改为下配乐）")
     ap.add_argument("--music", action="store_true",
@@ -761,6 +776,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     help="--audio 的音轨格式（默认 m4a 无损复制，mp3 需重编码）")
     ap.add_argument("--still-only", action="store_true",
                     help="图集只保存静态图，不保存动图/实况片段")
+    ap.add_argument("--motion-format", default="gif", choices=["gif", "mp4"],
+                    help="动图保存格式（默认 gif；mp4 保留原声和原画质）")
     ap.add_argument("--images-only", action="store_true",
                     help="（已废弃）现在默认就不下载配乐，保留参数仅为兼容")
     ap.add_argument("--video-only", action="store_true", help="只下视频")
@@ -793,7 +810,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                                      want_audio=args.audio,
                                      want_music=args.music,
                                      audio_format=args.audio_format,
-                                     want_motion=not args.still_only))
+                                     want_motion=not args.still_only,
+                                     motion_format=args.motion_format))
         except Exception as e:  # noqa: BLE001
             failures.append({"target": t, "error": str(e)})
 

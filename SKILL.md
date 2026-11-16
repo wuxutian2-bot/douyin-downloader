@@ -1,7 +1,7 @@
 ---
 name: douyin-downloader
 description: "Douyin link to video/album/live-photo/GIF/audio/music: local tool."
-version: 1.2.0
+version: 1.3.0
 author: tibo
 license: MIT
 platforms: [windows, linux, macos]
@@ -14,7 +14,7 @@ metadata:
 # 抖音作品下载器（视频 / 图集 / 动图 / GIF / 音频）
 
 给一个抖音链接，把作品的原片存到本地：视频取最高清晰度无水印源，图集取原图（自动转 JPG），
-动图/实况连动画一起存（`_01.mp4`）。用户明确要音频时，还能导出视频原声或作品配乐。
+动图/实况连动画一起存（默认转成 `_01.gif`）。用户明确要音频时，还能导出视频原声或作品配乐。
 完全本地运行，不依赖任何第三方 Python 包。
 
 ## When to Use
@@ -28,8 +28,8 @@ metadata:
 **用户没提音频就不要加这两个参数**——默认只下原片/原图，一个音频文件都不产出。
 要音频时把参数加在**同一条命令**上，一次跑完，不要先下视频再单独跑一遍。
 
-动图/实况默认会连 `_01.mp4` 一起存；用户明确说"只要图/不要动图"时才加 `--still-only`。
-用户要 GIF 时加 `--to-gif`——别自己把动图 mp4 重命名成 `.gif`，那不是 GIF。
+动图/实况默认会转成 `_01.gif` 一起存；用户明确说"只要图/不要动图"时才加 `--still-only`。
+用户要原声/原画质的动图时加 `--motion-format mp4`——GIF 没有声音。
 
 **路径**：`scripts/douyin_dl.py`、`scripts/douyin_cdp.py`、`scripts/下载抖音视频.bat`、`scripts/README.md`。
 把前两个 `.py` 拷到同一目录即可运行；`README.md` 可以直接给用户看。
@@ -52,8 +52,8 @@ metadata:
    brew install ffmpeg       # macOS
    sudo apt install ffmpeg   # Debian/Ubuntu
    ```
-   没装也能跑，只是 webp 原图保持原格式、`--to-gif` 不可用、`--audio` 退化为直接下载音乐轨
-   （见「音频与配乐」）、校验退化为读文件头。
+   没装也能跑，只是 webp 原图保持原格式、`--to-gif` 不可用、动图 GIF 转不了会退回 mp4、
+   `--audio` 退化为直接下载音乐轨（见「音频与配乐」）、校验退化为读文件头。
 
 ## 用法
 
@@ -65,13 +65,16 @@ python douyin_dl.py "7.17 复制此链接打开抖音 https://v.douyin.com/XXXX/
 # 落地到指定目录
 python douyin_dl.py "<链接>" -o D:\my\videos
 
-# 图集 / 动图（自动逐张下载；有动图的会连 _01.mp4 一起存）
+# 图集 / 动图（自动逐张下载；动图默认转 GIF）
 python douyin_dl.py "https://www.douyin.com/note/7697265979428200050"
 
-# 只要静态图，不要动图/实况片段
+# 只要静态图，不要动图/实况 GIF
 python douyin_dl.py "<链接>" --still-only
 
-# 视频或动图额外转 GIF（12fps / 480px 宽）
+# 动图保留 mp4（带原声、原画质，不转 GIF）
+python douyin_dl.py "<链接>" --motion-format mp4
+
+# 普通视频额外转一份 GIF（12fps / 480px 宽）
 python douyin_dl.py "<链接>" --to-gif
 
 # 额外导出视频原声（m4a，需 ffmpeg）
@@ -99,26 +102,28 @@ python douyin_dl.py "<链接>" --json
 |---|---|
 | 视频 | `douyin_<id>.mp4`（最高清晰度，无水印） |
 | 图集 | `douyin_<id>_01.jpg`、`_02.jpg` …（原图，按张编号） |
-| 动图/实况 | 额外 `douyin_<id>_01.mp4` …（每张图的动画，默认保存） |
-| `--still-only` | 不产出上面的动图 mp4，只留静态图 |
+| 动图/实况 | 额外 `douyin_<id>_01.gif` …（每张图的动画，默认转 GIF） |
+| `--motion-format mp4` | 动图改存 `_01.mp4`（保留原声和画质） |
+| `--still-only` | 不产出上面的动图文件，只留静态图 |
 | `--audio` | 额外 `douyin_<id>_audio.m4a`（`--audio-format mp3` 时是 `.mp3`） |
 | `--music` | 额外 `douyin_<id>_music.mp3` |
-| `--to-gif` | 额外 `douyin_<id>.gif`；动图作品额外 `_01.gif` … |
+| `--to-gif` | 普通视频额外 `douyin_<id>.gif` |
 
-### 动图 / 实况（默认连动画一起存）
+### 动图 / 实况（默认转 GIF）
 
 抖音的动图/实况作品，每张图其实是「静态首帧 + 一段短 mp4」：
 `url_list` 里是首帧 jpg/webp，真正的动画在 `images[i].video.play_addr`。
-默认两个都存，编号一致：
+默认产出成对的静态图和 GIF，编号一致：
 
 | 产出 | 说明 |
 |---|---|
 | `douyin_<id>_01.jpg` | 首帧原图 |
-| `douyin_<id>_01.mp4` | 动图/实况片段（h264，通常带 aac 音轨） |
+| `douyin_<id>_01.gif` | 动画 GIF（480px/12fps，无音轨，单张约 3–5 MB） |
 
+- 要保留原声和原画质：加 `--motion-format mp4`，产出 `_01.mp4`（h264 + aac）。
 - 只要静态图：加 `--still-only`。
-- 要 GIF：再加 `--to-gif`，每段额外产出 `_01.gif`（无音轨，480px/12fps，体积可能 3–5 MB）。
-- 普通图集没有 `video` 字段，不会凭空多出 mp4；判断依据是 `images[i].video.play_addr` 是否存在。
+- 没装 ffmpeg：GIF 转不了，会自动退回 `_01.mp4` 并在输出里提示。
+- 普通图集没有 `video` 字段，不会凭空多出 GIF；判断依据是 `images[i].video.play_addr` 是否存在。
 
 ### 音频与配乐（默认不下载）
 
@@ -179,6 +184,7 @@ python douyin_dl.py "<链接>" --json
    `video.play_addr` 是 1–5 秒的 mp4（常带 aac）。普通图集没有 `video` 字段。
    detail 路径是 `video.play_addr.url_list`，Flight 路径是 `video.playAddr: [{src}]`，
    `_normalize_camel` 必须原样保留这个 `video`——1.2.0 之前它被整个丢掉，所以只下到首帧静图。
+   拿到片段后默认用 ffmpeg 转 GIF；`--motion-format mp4` 则保留原片（带声音）。
 
 ## 关键陷阱
 
@@ -205,8 +211,10 @@ python douyin_dl.py "<链接>" --json
   `url_list`，把 `video` 整个丢了，于是动图作品稳定退化成静图。
 - **别给普通图集造 mp4。** 只有 `images[i].video.play_addr` 存在时才是动图/实况；
   普通图集没有 `video` 字段，别按"每张图都有动画"处理。
-- **动图片段通常带音轨。** 保留在 mp4 里；`--to-gif` 会丢音轨，而且 4–5 秒 480px 的 GIF
-  单张就有 3–5 MB，只在用户明确要 GIF 时才加。
+- **GIF 没有音轨，体积也大。** 动图默认转 GIF（480px/12fps，单张约 3–5 MB）；
+  用户要原声/原画质时用 `--motion-format mp4`，别把 GIF 当成带声音的动图。
+- **没 ffmpeg 就转不了 GIF。** 会退回保存 `_01.mp4` 并在输出里提示，如实说明，
+  不要谎称已经给了 GIF。
 - **`video.audio` 是空壳，不是音轨地址。** 实测 detail JSON 里它是 `{}`，`bit_rate_audio` 是
   `null`。找不到"纯音频直链"是正常的，改用 `music.play_url` 或从 mp4 抽。
 - **用曲作品的 `music.play_url` 可能只有试听片段。** `music.prevent_download` 为真，或下载时长
@@ -245,9 +253,9 @@ python douyin_dl.py "https://v.douyin.com/<short>/" --to-gif               # GIF
 python douyin_dl.py "https://v.douyin.com/<short>/" --audio                # 抽音轨
 python douyin_dl.py "https://v.douyin.com/<short>/" --music                # 配乐
 python douyin_dl.py "https://www.douyin.com/note/<id>" --music             # 图集配乐
-python douyin_dl.py "https://v.douyin.com/31jrmGbZcLg/"                    # 动图/实况：6 jpg + 6 mp4
+python douyin_dl.py "https://v.douyin.com/31jrmGbZcLg/"                    # 动图/实况：6 jpg + 6 gif
+python douyin_dl.py "https://v.douyin.com/31jrmGbZcLg/" --motion-format mp4  # 6 jpg + 6 mp4
 python douyin_dl.py "https://v.douyin.com/31jrmGbZcLg/" --still-only       # 只留静态图
-python douyin_dl.py "https://v.douyin.com/31jrmGbZcLg/" --to-gif           # 动图转 GIF
 ffprobe -v error -show_entries stream=width,height -of csv=p=0 <图片>       # 确认是原图尺寸
 ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 <音频>
 ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 <GIF>
@@ -256,9 +264,9 @@ ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_
 视频要看到 `[视频]` + 分辨率 ≥ 1080 宽；图集要看到 `[图集]` + 逐张 `jpeg`；
 `--audio` 要看到 `_audio.m4a` 且 ffprobe 能读到 `aac` 音轨；`--music` 要看到 `_music.mp3`；
 **不带 `--audio` / `--music` 时目录里不能出现 `.mp3` / `.m4a`**。
-动图作品要看到 `_01.jpg` 和 `_01.mp4` **成对出现**，mp4 有 h264 视频流（通常还有 aac 音轨）；
-普通图集（如 `7707963177069283283`）只有 jpg，**不能多出 `_01.mp4`**；
-GIF 的 `nb_read_frames` 必须 > 1。
+动图作品要看到 `_01.jpg` 和 `_01.gif` **成对出现**，GIF 的 `nb_read_frames` 必须 > 1；
+`--motion-format mp4` 时改成 `_01.mp4`，ffprobe 要有 h264 视频流（通常还有 aac 音轨）；
+普通图集（如 `7707963177069283283`）只有 jpg，**不能多出 `_01.gif` / `_01.mp4`**。
 以上都要 `成功 N/N，失败 0`。跑完删掉 `_verify/`。
 
 `--audio` 还要在"没装 ffmpeg"的条件下跑一次：临时把 PATH 收窄到只剩 Python
